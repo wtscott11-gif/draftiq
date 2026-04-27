@@ -21,7 +21,7 @@ headers: { “Content-Type”: “application/json” },
 });
 }
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
+const apiKey = process.env.GOOGLE_API_KEY;
 if (!apiKey) {
 return new Response(JSON.stringify({ error: “API key not configured” }), {
 status: 500,
@@ -39,7 +39,7 @@ headers: { “Content-Type”: “application/json” },
 });
 }
 
-const { system, messages, model, max_tokens } = body;
+const { system, messages } = body;
 
 if (!messages || !Array.isArray(messages)) {
 return new Response(JSON.stringify({ error: “messages array required” }), {
@@ -48,27 +48,62 @@ headers: { “Content-Type”: “application/json” },
 });
 }
 
-try {
-const upstream = await fetch(“https://api.anthropic.com/v1/messages”, {
-method: “POST”,
-headers: {
-“Content-Type”: “application/json”,
-“x-api-key”: apiKey,
-“anthropic-version”: “2023-06-01”,
+// Convert messages array to Gemini’s contents format.
+// Gemini uses “user” and “model” roles (not “assistant”).
+const contents = messages.map((m) => ({
+role: m.role === “assistant” ? “model” : “user”,
+parts: [{ text: m.content }],
+}));
+
+const geminiBody = {
+system_instruction: system
+? { parts: [{ text: system }] }
+: undefined,
+contents,
+generationConfig: {
+maxOutputTokens: 1024,
+temperature: 0.7,
 },
-body: JSON.stringify({
-model: model || “claude-sonnet-4-20250514”,
-max_tokens: max_tokens || 1024,
-system: system || “”,
-messages,
-}),
-});
+};
+
+try {
+const model = “gemini-2.0-flash”;
+const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
 ```
-const data = await upstream.json();
+const upstream = await fetch(url, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(geminiBody),
+});
 
-return new Response(JSON.stringify(data), {
-  status: upstream.status,
+const geminiData = await upstream.json();
+
+if (!upstream.ok) {
+  return new Response(
+    JSON.stringify({ error: "Gemini API error", detail: geminiData }),
+    {
+      status: upstream.status,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+    }
+  );
+}
+
+// Normalize Gemini response to the same shape App.jsx expects:
+// { content: [{ text: "..." }] }
+const geminiText =
+  geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ||
+  "Sorry, I couldn't generate a response.";
+
+const normalized = {
+  content: [{ type: "text", text: geminiText }],
+};
+
+return new Response(JSON.stringify(normalized), {
+  status: 200,
   headers: {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
